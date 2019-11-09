@@ -4,6 +4,8 @@
 
 This is a new and improved version of a CFN template blogged about by [Linux Academy](https://linuxacademy.com/).
 
+To read a detailed blog post on how it was setup, checkout: [Deploy an OpenVPN Instance to AWS with CloudFormation](https://dev.to/scriptautomate/deploy-an-openvpn-instance-to-aws-with-cloudformation-44fg)
+
 > If you want to see the original template that they worked on, taking note that it is out-dated and no longer functional, you can take a look at it here:
 > - [GitHub Gist: vpn-cloudformation-template.yaml](https://gist.github.com/pbzona/13fd0d9d12a7cc7492007ed370b677a0)
 >
