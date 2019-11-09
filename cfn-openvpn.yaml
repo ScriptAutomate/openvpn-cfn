@@ -149,8 +149,6 @@ Resources:
         - IpProtocol: !Ref OpenVPNProtocol
           FromPort: !Ref OpenVPNPort
           ToPort: !Ref OpenVPNPort
-          #FromPort: !If [OpenVPNUDPProtocol, 1194, 443]
-          #ToPort: !If [OpenVPNUDPProtocol, 1194, 443]
           CidrIp: !Ref ClientIPCIDR
         - IpProtocol: tcp
           FromPort: 22
@@ -251,7 +249,7 @@ Resources:
               /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2OpenVPNInstance --configsets myCfnConfigSet --region ${AWS::Region}
               /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EC2OpenVPNInstance --region ${AWS::Region}
 
-    # The CloudFormation stack will wait to mark the EC2OpenVPNInstance as CREATE_COMPLETE until we recieve a signal from the instance, or 10 minutes elapses.
+    # The CloudFormation stack will wait to mark the EC2OpenVPNInstance as CREATE_COMPLETE until we receive a signal from the instance, or 10 minutes elapses.
     CreationPolicy:
       ResourceSignal:
         Count: "1"
@@ -330,9 +328,7 @@ Resources:
               group: "root" 
 
         # Use easy-rsa to generate our certificate authority (CA) and encryption keys
-        # I'm not sure if it's possible to source files into the cfn-init environment, so I am just doing it inline with each command
-        # The easy-rsa scripts use an interactive mode flag which is what the sed command is removing
-        # Use openssl to generate a static TLS client cert, this is what the client will use authenticate with the the OpenVPN server
+        # Use openvpn to generate a static TLS client cert, this is what the client will use authenticate with the the OpenVPN server
         generate_secrets:
           commands:
             01_generate_secrets_init_pkidir:
@@ -356,7 +352,7 @@ Resources:
               command: "openvpn --genkey --secret pki/statictlssecret.key"
 
         # Generate the openvpn client configuration files
-        # Generate a script which will concatinate the client configuration with the cert and encryption key to generate the ovpn profile
+        # Generate a script which will collect the client configuration into an OVPN profile
         generate_client:
           files:
             /opt/easy-rsa/openvpn_client.conf:
@@ -476,7 +472,8 @@ Resources:
               command: !Sub |
                 aws s3 cp /var/log/cfn-init.log s3://${OpenVPNS3Bucket}/log/genSecrets_cfn-init.log
 
-  # Original Source: https://github.com/mike-mosher/custom-resource-s3-bucket-delete
+  # Original Source for the following Python 3.7 CustomResource section:
+  # https://github.com/mike-mosher/custom-resource-s3-bucket-delete
   EmptyS3BucketLambdaExecutionRole:
     Type: "AWS::IAM::Role"
     Properties:
