@@ -1,0 +1,590 @@
+# Personal OpenVPN Server Deployment
+
+# Original Linux Academy blog series walkthrough on building OpenVPN template:
+# - Part 1: https://linuxacademy.com/blog/tutorials/roll-vpn-aws-cloudformation-part-one/
+# - Part 2: https://linuxacademy.com/blog/tutorials/roll-vpn-aws-cloudformation-part-two/
+# - Part 3: https://linuxacademy.com/blog/tutorials/how-to-roll-your-own-vpn-with-aws-cloudformation-part-three/
+
+# [[CHANGELOG]]
+# Updates applied by Derek Ardolf / @ScriptAutomate / https://icanteven.io
+# 11/06/2019 - Version 2.0:
+# - Fixed client certificate to properly work from mobile (Android / iOS)
+#   - Source: https://forums.openvpn.net/viewtopic.php?f=33&t=26951
+#   - Needed to change "ns-cert-type server" in client conf to "remote-cert-tls server"
+#     - remote-cert-tls info: https://community.openvpn.net/openvpn/wiki/Openvpn24ManPage
+# - Added a few more parameters
+# - Misc. minor fixes
+# 09/10/2019 - Version 1.2:
+# - Removed comp-lzo / compression due to VORACLE security advisory (2018)
+#   - Source: https://community.openvpn.net/openvpn/wiki/VORACLE
+# 09/06/2019 - Version 1.1:
+# - Upgraded to work on Amazon Linux 2
+# - Upgraded from easy-rsa v2 to easy-rsa v3
+# - Lambda function upgraded from nodejs6.10 to nodejs8.10 runtime
+# - Finds latest AMI ID at launch via SSM parameter store; no hard-coded AMI Id by default
+# - Allows for specifying OpenVPN version
+# - Added parameter for optional tcp vs. udp protocol
+# - Added commented-out sections for ease of debug by uncommenting if needed:
+#   - SSHKeyName parameter
+#   - EC2 instance KeyName !Ref of SSHKeyName
+#   - Security Group TCP / 22 SSH access from ClientIPCIDR
+#
+# Created by John Creecy / @zugdug
+# 10/30/2017 - Version 1.0:
+# - Original: https://gist.github.com/zugdud/b39eea02faa6926305f57fbde8d31b68
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: OpenVPN Stack
+
+Parameters:
+  OpenVPNProtocol:
+    Type: String
+    Default: udp
+    AllowedValues: 
+      - udp
+      - tcp
+
+  OpenVPNPort:
+    Type: Number
+    Default: 1194
+    Description: OpenVPN port. Standards - 443 for TCP / 1194 for UDP
+    AllowedValues:
+      - 443
+      - 1194
+
+  SSHKeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: SSH Key for the OpenVPN Instance
+    ConstraintDescription: Must be the name of an existing EC2 KeyPair.
+
+  ClientIPCIDR:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR IP to be granted access by the SG, use 0.0.0.0/0 to accept all IPs
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+
+  # Parameter store makes finding latest AMI image id easy
+  # Is region locked, by default. Wherever CFN is spun up,
+  #  resulting image id is specific to source region!
+  # Source: https://aws.amazon.com/blogs/compute/query-for-the-latest-amazon-linux-ami-ids-using-aws-systems-manager-parameter-store/
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+  OpenVPNVersion:
+    Type: "String"
+    Default: "2.4.7" # Latest Tested Version on Amazon Linux 2
+
+  EasyRSAREQCN:
+    Type: "String"
+    Default: "ChangeMe"
+
+  EasyRSAREQCNAlgorithm:
+    Type: 'String'
+    Default: rsa
+    AllowedValues: 
+      - rsa
+      - ec
+
+Resources:
+
+  # Our VPC, most of our resources will be provisioned within
+  OpenVPNVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/22 # We only need 1 IPaddress for our OpenVPN server, I just like even numbers and 8-bit subnets
+      Tags:
+      - Key: Name
+        Value: personal-OpenVPN-vpc
+
+  # The only subnet we will create within our VPC, our OpenVPN server will be provisioned within
+  # This subnet will be assigned a default route out to the internet, hence the name.
+  MyPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref OpenVPNVPC
+      CidrBlock: 10.0.0.0/24 # 8-bit subnet provides 256 addresses, 251 of which are usable
+      Tags:
+      - Key: Name
+        Value: personal-OpenVPN-publicSubnet
+
+  # We will need our VPC to have access to the internet
+  myInternetGateway:
+      Type: "AWS::EC2::InternetGateway"
+      Properties:
+        Tags:
+        - Key: Name
+          Value: personal-OpenVPN-myIGW
+
+  # The VPC route table
+  myRouteTablePublic:
+      Type: "AWS::EC2::RouteTable"
+      Properties:
+        VpcId: !Ref OpenVPNVPC
+        Tags:
+          - Key: Name
+            Value: personal-OpenVPN-myRouteTablePublic
+
+  # Attach the Internet Gateway to OpenVPNVPC
+  AttachInternetGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref OpenVPNVPC
+      InternetGatewayId: !Ref myInternetGateway
+
+  # Add a default route to our VPCs internet gateway
+  RouteDefaultPublic:
+    Type: "AWS::EC2::Route"
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref myInternetGateway
+      RouteTableId: !Ref myRouteTablePublic
+
+  # Associate our route table to our subnet
+  MyPublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref MyPublicSubnet
+      RouteTableId: !Ref myRouteTablePublic
+
+  # Request a new Elastic IP Address
+  OpenVPNEIP:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: vpc
+
+  # Bind our Elastic IP Address to an Elastic Network Interface
+  AssociateManagementAccessPort:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt OpenVPNEIP.AllocationId
+      NetworkInterfaceId: !Ref myNetworkInterface
+
+  # Create a security group for the ENI that will be attached to our OpenVPN server
+  # OpenVPN and SSH port access
+  OpenVPNInstanceSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG for OpenVPN Server
+      VpcId: !Ref OpenVPNVPC
+      SecurityGroupIngress:
+        - IpProtocol: !Ref OpenVPNProtocol
+          FromPort: !Ref OpenVPNPort
+          ToPort: !Ref OpenVPNPort
+          #FromPort: !If [OpenVPNUDPProtocol, 1194, 443]
+          #ToPort: !If [OpenVPNUDPProtocol, 1194, 443]
+          CidrIp: !Ref ClientIPCIDR
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref ClientIPCIDR
+
+  # This is the IAM role which will be associated with our EC2 instance
+  myEC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+
+  # This is the S3 bucket where our client profile and secrets will be stored
+  OpenVPNS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+
+  # This is the IAM policy which will be attached to our EC2 instance role
+  OpenVPNAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: OpenVPNAccessPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - s3:*
+            Effect: Allow
+            Resource: !Join 
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref OpenVPNS3Bucket
+                - /*
+                
+      Roles:
+        - !Ref myEC2InstanceRole
+
+  # Binding profile for our myEC2InstanceRole to the actual EC2 instance
+  ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+       - !Ref myEC2InstanceRole
+
+  # The Elastic Network Interface which will be attached to our EC2 instance
+  # Our security group, OpenVPNInstanceSG is also associated with this interface
+  myNetworkInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref MyPublicSubnet
+      Description: Public Interface
+      GroupSet:
+      - !Ref OpenVPNInstanceSG
+      SourceDestCheck: false
+      Tags:
+        -
+          Key: Name
+          Value: Public ENI
+
+  # The EC2 instance which will host OpenVPN
+  EC2OpenVPNInstance:
+    Type: "AWS::EC2::Instance"
+    DependsOn: OpenVPNS3Bucket
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t2.micro
+      SourceDestCheck: false
+      KeyName: !Ref SSHKeyName
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref myNetworkInterface
+          DeviceIndex: "0"
+      IamInstanceProfile: !Ref ec2InstanceProfile
+      Tags:
+        -
+          Key: Name
+          Value: OpenVPN Server
+
+      # User data is passed into the instance, executed as a shell script, and run only once on first boot
+      # Here we invoke cfn-init on our configSet myCfnConfigSet
+      # The last command emits a cfn-signal to the CloudFormation stack which completes the associated CreationPolicy timer
+      UserData:
+          "Fn::Base64":
+            !Sub |
+              #!/bin/bash
+              yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+              yum update -y
+              /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2OpenVPNInstance --configsets myCfnConfigSet --region ${AWS::Region}
+              /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EC2OpenVPNInstance --region ${AWS::Region}
+
+    # The CloudFormation stack will wait to mark the EC2OpenVPNInstance as CREATE_COMPLETE until we recieve a signal from the instance, or 10 minutes elapses.
+    CreationPolicy:
+      ResourceSignal:
+        Count: "1"
+        Timeout: PT10M
+
+    Metadata:
+      AWS::CloudFormation::Init:
+        # Our cfn-init config set rules, divided into logical sections to make reading it easier, hopefully :)
+        configSets:
+          myCfnConfigSet:
+            - "configure_cfn"
+            - "install_software"
+            - "generate_easyrsa_vars"
+            - "generate_secrets"
+            - "generate_client"
+            - "configure_server"
+            - "upload_files"
+
+        # Configure and start cfn-hup
+        # cfn-hup will poll the stack for changes, and if possible, apply instance changes in place on the instance
+        configure_cfn:
+          files:
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.EC2OpenVPNInstance.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2OpenVPNInstance --configsets myCfnConfigSet --region ${AWS::Region}
+              mode: "000400"
+              owner: root
+              group: root
+            /etc/cfn/cfn-hup.conf:
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                verbose=true
+                interval=1
+              mode: "000400"
+              owner: root
+              group: root
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: "true"
+                ensureRunning: "true"
+                files:
+                  - "/etc/cfn/cfn-hup.conf"
+                  - "/etc/cfn/hooks.d/cfn-auto-reloader.conf"
+
+        # Install the latest version of openvpn via the yum package manager
+        # Install easy-rsa via the EPEL repo
+        # Make a copy of the installed files to /opt/easy-rsa as our working directory
+        install_software:
+          packages:
+            yum:
+              openvpn: [ !Ref OpenVPNVersion ]
+              easy-rsa: []
+              yum-plugin-versionlock: []
+          commands:
+            01_install_software_copy_easyrsa:
+              command: "cp -RL /usr/share/easy-rsa/3 /opt/easy-rsa"
+            02_lock_openvpn_version:
+              command: "yum versionlock openvpn"
+
+        # Default is rsa for algorithm
+        # Changing to ECDSA
+        generate_easyrsa_vars:
+          files:
+            /opt/easy-rsa/vars:
+              content: !Sub |
+                set_var EASYRSA_ALGO		  ${EasyRSAREQCNAlgorithm}
+                set_var EASYRSA_REQ_CN		${EasyRSAREQCN}
+              mode: "000644"
+              owner: "root"
+              group: "root" 
+
+        # Use easy-rsa to generate our certificate authority (CA) and encryption keys
+        # I'm not sure if it's possible to source files into the cfn-init environment, so I am just doing it inline with each command
+        # The easy-rsa scripts use an interactive mode flag which is what the sed command is removing
+        # Use openssl to generate a static TLS client cert, this is what the client will use authenticate with the the OpenVPN server
+        generate_secrets:
+          commands:
+            01_generate_secrets_init_pkidir:
+              cwd: "/opt/easy-rsa"
+              test: "test -e /opt/easy-rsa/easyrsa"
+              command: "/opt/easy-rsa/easyrsa init-pki"
+            02_generate_secrets_run_build-ca:
+              cwd: "/opt/easy-rsa"
+              command: "/opt/easy-rsa/easyrsa --batch build-ca nopass"
+            03_generate_secrets_run_build-dh:
+              cwd: "/opt/easy-rsa"
+              command: "/opt/easy-rsa/easyrsa gen-dh"
+            04_generate_secrets_run_build-server-full:
+              cwd: "/opt/easy-rsa"
+              command: "/opt/easy-rsa/easyrsa build-server-full server nopass"
+            05_generate_empty_revoke_list:
+              cwd: "/opt/easy-rsa"
+              command: "/opt/easy-rsa/easyrsa gen-crl"
+            06_generate_secrets_statictlssecret:
+              cwd: "/opt/easy-rsa"
+              command: "openvpn --genkey --secret pki/statictlssecret.key"
+
+        # Generate the openvpn client configuration files
+        # Generate a script which will concatinate the client configuration with the cert and encryption key to generate the ovpn profile
+        generate_client:
+          files:
+            /opt/easy-rsa/openvpn_client.conf:
+              content: !Sub |
+                client
+                dev tun
+                proto ${OpenVPNProtocol}
+                remote ${OpenVPNEIP} ${OpenVPNPort}
+                tls-client
+                tls-version-min 1.2
+                tls-cipher TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256:TLS-ECDHE-ECDSA-WITH-AES-128-GCM-SHA256:TLS-ECDHE-RSA-WITH-AES-256-GCM-SHA384:TLS-DHE-RSA-WITH-AES-256-CBC-SHA256
+                cipher AES-256-CBC
+                auth SHA512
+                resolv-retry infinite
+                auth-retry none
+                nobind
+                persist-key
+                persist-tun
+                remote-cert-tls server
+                verb 3
+              mode: "000700"
+              owner: root
+              group: root
+            /opt/easy-rsa/gen_ovpn_profile.sh:
+              content: !Sub |
+                (cat /opt/easy-rsa/openvpn_client.conf
+                echo '<key>'
+                cat pki/private/clientuser.key
+                echo '</key>'
+                echo '<cert>'
+                cat pki/issued/clientuser.crt
+                echo '</cert>'
+                echo '<ca>'
+                cat pki/ca.crt
+                echo '</ca>'
+                echo 'key-direction 1'
+                echo '<tls-auth>'
+                cat pki/statictlssecret.key
+                echo '</tls-auth>'
+                ) > /opt/easy-rsa/pki/openvpn_clientuser.ovpn
+              mode: "000700"
+              owner: root
+              group: root
+          commands:
+            01_generate_client_run_build-key:
+              cwd: "/opt/easy-rsa"
+              command: "/opt/easy-rsa/easyrsa build-client-full clientuser nopass"
+            02_generate_client_generate_ovpn_profile:
+              cwd: "/opt/easy-rsa"
+              test: "test -e /opt/easy-rsa/gen_ovpn_profile.sh"
+              command: "/opt/easy-rsa/gen_ovpn_profile.sh"
+
+        # Generate configuration file for the OpenVPN server
+        # Enable IP forwarding in Linux
+        # Start OpenVPN
+        configure_server:
+          files:
+            /opt/openvpn/server.conf:
+              content: !Sub |
+                port ${OpenVPNPort}
+                proto ${OpenVPNProtocol}
+                dev tun
+                server 172.16.0.0 255.255.252.0
+                push "redirect-gateway def1"
+                ca /opt/easy-rsa/pki/ca.crt
+                cert /opt/easy-rsa/pki/issued/server.crt
+                key /opt/easy-rsa/pki/private/server.key
+                dh /opt/easy-rsa/pki/dh.pem
+                tls-server
+                tls-auth /opt/easy-rsa/pki/statictlssecret.key 0
+                tls-version-min 1.2
+                tls-cipher TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256:TLS-ECDHE-ECDSA-WITH-AES-128-GCM-SHA256:TLS-ECDHE-RSA-WITH-AES-256-GCM-SHA384:TLS-DHE-RSA-WITH-AES-256-CBC-SHA256
+                cipher AES-256-CBC
+                auth SHA512
+                ifconfig-pool-persist ipp.txt
+                keepalive 10 120
+                ping-timer-rem
+                persist-key
+                persist-tun
+                status openvpn-status.log
+                log-append /var/log/openvpn.log
+                verb 3
+                max-clients 5
+                user nobody
+                group nobody
+              mode: "000644"
+              owner: "root"
+              group: "root" 
+          commands:
+            01_configure_server_sysctl_ipforward:
+              command: echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+            02_configure_server_sysctl_reload:
+              command: "sysctl -p"
+            03_configure_server_iptables_nat:
+              command: "iptables -t nat -A POSTROUTING -s 172.16.0.0/22 -o eth0 -j MASQUERADE"
+            04_configure_server_update_config:
+              test: "test -e /opt/openvpn/server.conf"
+              command: "cp -f /opt/openvpn/server.conf /etc/openvpn/server/server.conf"
+            05_configure_systemctl_openvpn_enable:
+              test: "test -e /lib/systemd/system/openvpn-server@.service"
+              command: "systemctl enable openvpn-server@server"
+            06_configure_systemctl_openvpn_start:
+              test: "test -e /lib/systemd/system/openvpn-server@.service"
+              command: "systemctl start openvpn-server@server"
+
+        # Zip the client files
+        # Upload the client file archive and cfn-init log to S3
+        upload_files:
+          commands:
+            01_upload_file_openvpn-clientuser.ovpn:
+              cwd: "/opt/easy-rsa/pki"
+              command: !Sub |
+                aws s3 cp openvpn_clientuser.ovpn s3://${OpenVPNS3Bucket}/client/openvpn_clientuser.ovpn
+            02_upload_file_cfn_init_log:
+              cwd: "/var/log"
+              test: "test -e /var/log/cfn-init.log"
+              command: !Sub |
+                aws s3 cp /var/log/cfn-init.log s3://${OpenVPNS3Bucket}/log/genSecrets_cfn-init.log
+
+  # Original Source: https://github.com/mike-mosher/custom-resource-s3-bucket-delete
+  EmptyS3BucketLambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: LoggingPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+        - PolicyName: S3Policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:List*
+                  - s3:DeleteObject
+                Resource: "*"
+
+  EmptyS3BucketLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Code:
+        ZipFile: |
+          import cfnresponse
+          import boto3
+
+          def handler(event, context):
+              print(event)
+              print('boto version ' + boto3.__version__)
+
+              # Globals
+              responseData = {}
+              ResponseStatus = cfnresponse.SUCCESS
+              s3bucketName = event['ResourceProperties']['s3bucketName']
+
+              if event['RequestType'] == 'Create':
+                  responseData['Message'] = "Resource creation successful!"
+
+              elif event['RequestType'] == 'Update':
+                  responseData['Message'] = "Resource update successful!"
+
+              elif event['RequestType'] == 'Delete':
+                  # Need to empty the S3 bucket before it is deleted
+                  s3 = boto3.resource('s3')
+                  bucket = s3.Bucket(s3bucketName)
+                  bucket.objects.all().delete()
+
+                  responseData['Message'] = "Resource deletion successful!"
+
+              cfnresponse.send(event, context, ResponseStatus, responseData)
+
+      Handler: index.handler
+      Runtime: python3.7
+      Role: !GetAtt EmptyS3BucketLambdaExecutionRole.Arn
+
+  EmptyS3Bucket:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !GetAtt EmptyS3BucketLambdaFunction.Arn
+      s3bucketName: !Ref OpenVPNS3Bucket
+
+Outputs:
+  VPNClientsS3Bucket:
+    Description: S3 bucket name
+    Value: !Ref OpenVPNS3Bucket
+  VPNClientUserFile:
+    Description: Initial generated OVPN of clientuser
+    Value: !Sub |
+      s3://${OpenVPNS3Bucket}/client/openvpn_clientuser.ovpn
+  OpenVPNEIP:
+    Description: Instance EIP
+    Value: !Ref OpenVPNEIP
+  EC2OpenVPNInstance:
+    Description: EC2 Instance
+    Value: !Ref EC2OpenVPNInstance
