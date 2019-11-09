@@ -427,6 +427,7 @@ Resources:
                 cert /opt/easy-rsa/pki/issued/server.crt
                 key /opt/easy-rsa/pki/private/server.key
                 dh /opt/easy-rsa/pki/dh.pem
+                crl-verify /opt/easy-rsa/pki/crl.pem
                 tls-server
                 tls-auth /opt/easy-rsa/pki/statictlssecret.key 0
                 tls-version-min 1.2
