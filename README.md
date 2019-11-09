@@ -1,3 +1,5 @@
+!["OpenVPN"](https://openvpn.net/wp-content/uploads/2018/06/about_text_logo.png "OpenVPN")
+
 # Deploy OpenVPN to AWS via CloudFormation and Amazon Linux 2
 
 This is a new and improved version of a CFN template blogged about by [Linux Academy](https://linuxacademy.com/).
