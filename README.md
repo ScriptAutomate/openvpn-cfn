@@ -8,13 +8,15 @@ To read a detailed blog post on how it was setup, checkout: [Deploy an OpenVPN I
 
 > ***NOTE:*** _This worked much more like a personal learning tool, and I'd rather recommend something like [AlgoVPN](https://github.com/trailofbits/algo) when it comes to deploying and managing your own VPN in AWS due to the community and expertise around the project._
 
-> If you want to see the original template that they worked on, taking note that it is out-dated and no longer functional, you can take a look at it here:
-> - [GitHub Gist: vpn-cloudformation-template.yaml](https://gist.github.com/pbzona/13fd0d9d12a7cc7492007ed370b677a0)
->
-> The following blog articles walkthrough how the base CFN template was initially created, along with full descriptions as to why each resource is used:
-> - [How to Roll Your Own VPN with AWS CloudFormation – Part One](https://linuxacademy.com/blog/tutorials/roll-vpn-aws-cloudformation-part-one/)
-> - [How to Roll Your Own VPN with AWS CloudFormation – Part Two](https://linuxacademy.com/blog/tutorials/roll-vpn-aws-cloudformation-part-two/)
-> - [How to Roll Your Own VPN with AWS CloudFormation – Part Three](https://linuxacademy.com/blog/tutorials/how-to-roll-your-own-vpn-with-aws-cloudformation-part-three/)
+If you want to see the original OpenVPN CFN template that I worked on fixing/expanding, taking note that it is out-dated and no longer functional, you can take a look at it here:
+
+- [GitHub Gist: vpn-cloudformation-template.yaml](https://gist.github.com/pbzona/13fd0d9d12a7cc7492007ed370b677a0)
+
+The following blog articles walkthrough how the base CFN template was initially created, along with full descriptions as to why each resource is used:
+
+- [How to Roll Your Own VPN with AWS CloudFormation – Part One](https://linuxacademy.com/blog/tutorials/roll-vpn-aws-cloudformation-part-one/)
+- [How to Roll Your Own VPN with AWS CloudFormation – Part Two](https://linuxacademy.com/blog/tutorials/roll-vpn-aws-cloudformation-part-two/)
+- [How to Roll Your Own VPN with AWS CloudFormation – Part Three](https://linuxacademy.com/blog/tutorials/how-to-roll-your-own-vpn-with-aws-cloudformation-part-three/)
 
 ## Updates in This New CFN Template
 
