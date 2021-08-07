@@ -50,7 +50,7 @@ Otherwise, keep following for a CLI approach to the deployment that sets up a Py
 
 Checkout [awscli v2](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) if needed. Using the CLI can make deployments of CFN templates much easier, following the below steps.
 
-> **NOTE:** Don't install awscli via pypi (ex. `pip install awscli`), as that is awscli v2.
+> **NOTE:** Don't install awscli via pypi (ex. `pip install awscli`), as that is awscli v1.
 
 ##### `awscli` Setup: Configure AWS CLI Profile
 
